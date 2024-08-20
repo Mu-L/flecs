@@ -160,6 +160,7 @@ extern "C" {
 #define EcsQueryHasTableThisVar       (1u << 25u) /* Does query have $this table var */
 #define EcsQueryCacheYieldEmptyTables (1u << 27u) /* Does query cache empty tables */
 
+
 ////////////////////////////////////////////////////////////////////////////////
 //// Term flags (used by ecs_term_t::flags_)
 ////////////////////////////////////////////////////////////////////////////////
@@ -173,11 +174,12 @@ extern "C" {
 #define EcsTermIsCacheable            (1u << 7)
 #define EcsTermIsScope                (1u << 8)
 #define EcsTermIsMember               (1u << 9)
-#define EcsTermIsToggle               (1u << 10)
-#define EcsTermKeepAlive              (1u << 11)
-#define EcsTermIsSparse               (1u << 12)
-#define EcsTermIsUnion                (1u << 13)
-#define EcsTermIsOr                   (1u << 14)
+#define EcsTermCanToggle              (1u << 10)
+#define EcsTermCanFlatten             (1u << 11)
+#define EcsTermKeepAlive              (1u << 12)
+#define EcsTermIsSparse               (1u << 13)
+#define EcsTermIsUnion                (1u << 14)
+#define EcsTermIsOr                   (1u << 15)
 
 
 ////////////////////////////////////////////////////////////////////////////////
