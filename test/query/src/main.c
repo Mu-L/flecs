@@ -1851,6 +1851,7 @@ void Flatten_this_childof_parent_w_component(void);
 void Flatten_this_childof_0(void);
 void Flatten_this_not_childof_wildcard(void);
 void Flatten_this_not_childof_any(void);
+void Flatten_this_childof_0_src(void);
 void Flatten_this_childof_parent_any_src(void);
 void Flatten_this_childof_parent_any_src_no_match(void);
 void Flatten_this_childof_wildcard(void);
@@ -1860,6 +1861,9 @@ void Flatten_this_childof_wildcard_mixed(void);
 void Flatten_this_childof_wildcard_w_component(void);
 void Flatten_this_childof_var(void);
 void Flatten_this_childof_var_written(void);
+void Flatten_var_childof_parent(void);
+void Flatten_var_childof_parent_w_tag(void);
+void Flatten_var_childof_parent_w_component(void);
 
 // Testsuite 'Sparse'
 void Sparse_setup(void);
@@ -9308,6 +9312,10 @@ bake_test_case Flatten_testcases[] = {
         Flatten_this_not_childof_any
     },
     {
+        "this_childof_0_src",
+        Flatten_this_childof_0_src
+    },
+    {
         "this_childof_parent_any_src",
         Flatten_this_childof_parent_any_src
     },
@@ -9342,6 +9350,18 @@ bake_test_case Flatten_testcases[] = {
     {
         "this_childof_var_written",
         Flatten_this_childof_var_written
+    },
+    {
+        "var_childof_parent",
+        Flatten_var_childof_parent
+    },
+    {
+        "var_childof_parent_w_tag",
+        Flatten_var_childof_parent_w_tag
+    },
+    {
+        "var_childof_parent_w_component",
+        Flatten_var_childof_parent_w_component
     }
 };
 
@@ -10391,7 +10411,7 @@ static bake_test_suite suites[] = {
         "Flatten",
         Flatten_setup,
         NULL,
-        18,
+        22,
         Flatten_testcases,
         1,
         Flatten_params
