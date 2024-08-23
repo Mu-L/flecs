@@ -1935,7 +1935,9 @@
                 "this_childof_wildcard_no_children",
                 "this_childof_wildcard_only_regular",
                 "this_childof_wildcard_mixed",
-                "this_childof_wildcard_w_component"
+                "this_childof_wildcard_w_component",
+                "this_childof_var",
+                "this_childof_var_written"
             ]
         }, {
             "id": "Sparse",
