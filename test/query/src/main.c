@@ -1845,6 +1845,7 @@ void Flatten_setup(void);
 void Flatten_fixed_src_childof_parent(void);
 void Flatten_fixed_src_childof_wildcard(void);
 void Flatten_fixed_src_childof_any(void);
+void Flatten_fixed_src_childof_var(void);
 void Flatten_this_childof_parent(void);
 void Flatten_this_childof_parent_no_children(void);
 void Flatten_this_childof_parent_only_regular(void);
@@ -1882,6 +1883,7 @@ void Flatten_this_written_childof_parent_w_component_inherited(void);
 void Flatten_this_written_childof_wildcard(void);
 void Flatten_this_written_childof_wildcard_mixed(void);
 void Flatten_this_written_childof_any(void);
+void Flatten_this_written_childof_var(void);
 void Flatten_var_written_childof_parent(void);
 void Flatten_var_written_childof_parent_w_component(void);
 void Flatten_var_written_childof_parent_w_component_inherit(void);
@@ -9309,6 +9311,10 @@ bake_test_case Flatten_testcases[] = {
         Flatten_fixed_src_childof_any
     },
     {
+        "fixed_src_childof_var",
+        Flatten_fixed_src_childof_var
+    },
+    {
         "this_childof_parent",
         Flatten_this_childof_parent
     },
@@ -9455,6 +9461,10 @@ bake_test_case Flatten_testcases[] = {
     {
         "this_written_childof_any",
         Flatten_this_written_childof_any
+    },
+    {
+        "this_written_childof_var",
+        Flatten_this_written_childof_var
     },
     {
         "var_written_childof_parent",
@@ -10516,7 +10526,7 @@ static bake_test_suite suites[] = {
         "Flatten",
         Flatten_setup,
         NULL,
-        43,
+        45,
         Flatten_testcases,
         1,
         Flatten_params
