@@ -3252,24 +3252,15 @@ ecs_ref_t ecs_ref_init_id(
 
     ecs_table_t *table = record->table;
     if (table) {
-        result.tr = flecs_table_record_get(world, table, id);
         result.table_id = table->id;
+        result.table_version = flecs_get_table_version(world, table);
+        result.ptr = flecs_get_component(table, ECS_RECORD_TO_ROW(record->row), 
+            flecs_id_record_get(world, id));
     }
 
     return result;
 error:
     return (ecs_ref_t){0};
-}
-
-static
-bool flecs_ref_needs_sync(
-    ecs_ref_t *ref,
-    ecs_table_record_t *tr,
-    const ecs_table_t *table)
-{
-    ecs_assert(ref != NULL, ECS_INTERNAL_ERROR, NULL);
-    ecs_assert(table != NULL, ECS_INTERNAL_ERROR, NULL);
-    return !tr || ref->table_id != table->id || tr->hdr.table != table;
 }
 
 void ecs_ref_update(
@@ -3285,19 +3276,23 @@ void ecs_ref_update(
     ecs_record_t *r = ref->record;
     ecs_table_t *table = r->table;
     if (!table) {
+        ref->table_id = 0;
+        ref->table_version = 0;
+        ref->ptr = NULL;
         return;
     }
 
-    ecs_table_record_t *tr = ref->tr;
-    if (flecs_ref_needs_sync(ref, tr, table)) {
-        tr = ref->tr = flecs_table_record_get(world, table, ref->id);
-        if (!tr) {
+    if (ref->table_id == table->id) {
+        if (ref->table_version == flecs_get_table_version(world, table)) {
             return;
         }
-
-        ecs_assert(tr->hdr.table == r->table, ECS_INTERNAL_ERROR, NULL);
-        ref->table_id = table->id;
     }
+
+    ref->table_id = table->id;
+    ref->table_version = flecs_get_table_version(world, table);
+    ref->ptr = flecs_get_component(table, ECS_RECORD_TO_ROW(r->row), 
+        flecs_id_record_get(world, ref->id));
+
 error:
     return;
 }
@@ -3312,7 +3307,9 @@ void* ecs_ref_get_id(
     ecs_check(ref->entity != 0, ECS_INVALID_PARAMETER, "ref not initialized");
     ecs_check(ref->id != 0, ECS_INVALID_PARAMETER, "ref not initialized");
     ecs_check(ref->record != NULL, ECS_INVALID_PARAMETER, "ref not initialized");
-    ecs_check(id == ref->id, ECS_INVALID_PARAMETER, "ref not initialized");
+    ecs_check(id == ref->id, ECS_INVALID_PARAMETER, "id does not match ref");
+
+    (void)id;
 
     ecs_record_t *r = ref->record;
     ecs_table_t *table = r->table;
@@ -3320,28 +3317,15 @@ void* ecs_ref_get_id(
         return NULL;
     }
 
-    int32_t row = ECS_RECORD_TO_ROW(r->row);
-    ecs_check(row < ecs_table_count(table), ECS_INTERNAL_ERROR, NULL);
-
-    ecs_table_record_t *tr = ref->tr;
-    if (flecs_ref_needs_sync(ref, tr, table)) {
-        tr = ref->tr = flecs_table_record_get(world, table, id);
-        if (!tr) {
-            return NULL;
-        }
-
-        ref->table_id = table->id;
-        ecs_assert(tr->hdr.table == r->table, ECS_INTERNAL_ERROR, NULL);
-    }
-
-    int32_t column = tr->column;
-    if (column == -1) {
-        ecs_id_record_t *idr = (ecs_id_record_t*)tr->hdr.cache;
-        if (idr->flags & EcsIdIsSparse) {
-            return flecs_sparse_get_any(idr->sparse, 0, ref->entity);
+    if (ref->table_id == table->id) {
+        if (ref->table_version == flecs_get_table_version(world, table)) {
+            return ref->ptr;
         }
     }
-    return flecs_table_get_component(table, column, row).ptr;
+
+    ecs_ref_update(world, ref);
+
+    return ref->ptr;
 error:
     return NULL;
 }

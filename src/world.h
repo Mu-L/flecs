@@ -83,6 +83,14 @@ void flecs_delete_table(
 void flecs_process_pending_tables(
     const ecs_world_t *world);
 
+void flecs_increment_table_version(
+    ecs_world_t *world,
+    ecs_table_t *table);
+
+uint32_t flecs_get_table_version(
+    const ecs_world_t *world,
+    const ecs_table_t *table);
+
 /* Convenience macro's for world allocator */
 #define flecs_walloc(world, size)\
     flecs_alloc(&world->allocator, size)

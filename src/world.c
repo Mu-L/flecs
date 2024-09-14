@@ -1637,6 +1637,27 @@ error:
     return 0;
 }
 
+void flecs_increment_table_version(
+    ecs_world_t *world,
+    ecs_table_t *table)
+{
+    flecs_poly_assert(world, ecs_world_t);
+    ecs_assert(table != NULL, ECS_INVALID_PARAMETER, NULL);
+
+    world->table_version[table->id & ECS_TABLE_VERSION_ARRAY_BITMASK] ++;
+    return;
+}
+
+uint32_t flecs_get_table_version(
+    const ecs_world_t *world,
+    const ecs_table_t *table)
+{
+    flecs_poly_assert(world, ecs_world_t);
+    ecs_assert(table != NULL, ECS_INVALID_PARAMETER, NULL);
+
+    return world->table_version[table->id & ECS_TABLE_VERSION_ARRAY_BITMASK];
+}
+
 const ecs_type_info_t* flecs_type_info_get(
     const ecs_world_t *world,
     ecs_entity_t component)

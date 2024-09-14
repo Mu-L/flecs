@@ -678,6 +678,12 @@ extern const ecs_entity_t EcsFlag;
 #define ECS_MAX_JOBS_PER_WORKER (16)
 #define ECS_MAX_DEFER_STACK (8)
 
+/* The bitmask used when determining the table version array index */
+#define ECS_TABLE_VERSION_ARRAY_BITMASK (0xff)
+
+/* The number of table versions to split tables across */
+#define ECS_TABLE_VERSION_ARRAY_SIZE (ECS_TABLE_VERSION_ARRAY_BITMASK + 1)
+
 /* Magic number for a flecs object */
 #define ECS_OBJECT_MAGIC (0x6563736f)
 
@@ -968,6 +974,10 @@ struct ecs_world_t {
 
     /* Unique id per generated event used to prevent duplicate notifications */
     int32_t event_id;
+
+    /* Array of table versions used with component refs to determine if the 
+     * cached pointer is still valid. */
+    uint32_t table_version[ECS_TABLE_VERSION_ARRAY_SIZE];
 
     /* Is entity range checking enabled? */
     bool range_check_enabled;
@@ -2895,6 +2905,14 @@ void flecs_delete_table(
 
 void flecs_process_pending_tables(
     const ecs_world_t *world);
+
+void flecs_increment_table_version(
+    ecs_world_t *world,
+    ecs_table_t *table);
+
+uint32_t flecs_get_table_version(
+    const ecs_world_t *world,
+    const ecs_table_t *table);
 
 /* Convenience macro's for world allocator */
 #define flecs_walloc(world, size)\
@@ -8240,24 +8258,15 @@ ecs_ref_t ecs_ref_init_id(
 
     ecs_table_t *table = record->table;
     if (table) {
-        result.tr = flecs_table_record_get(world, table, id);
         result.table_id = table->id;
+        result.table_version = flecs_get_table_version(world, table);
+        result.ptr = flecs_get_component(table, ECS_RECORD_TO_ROW(record->row), 
+            flecs_id_record_get(world, id));
     }
 
     return result;
 error:
     return (ecs_ref_t){0};
-}
-
-static
-bool flecs_ref_needs_sync(
-    ecs_ref_t *ref,
-    ecs_table_record_t *tr,
-    const ecs_table_t *table)
-{
-    ecs_assert(ref != NULL, ECS_INTERNAL_ERROR, NULL);
-    ecs_assert(table != NULL, ECS_INTERNAL_ERROR, NULL);
-    return !tr || ref->table_id != table->id || tr->hdr.table != table;
 }
 
 void ecs_ref_update(
@@ -8273,19 +8282,23 @@ void ecs_ref_update(
     ecs_record_t *r = ref->record;
     ecs_table_t *table = r->table;
     if (!table) {
+        ref->table_id = 0;
+        ref->table_version = 0;
+        ref->ptr = NULL;
         return;
     }
 
-    ecs_table_record_t *tr = ref->tr;
-    if (flecs_ref_needs_sync(ref, tr, table)) {
-        tr = ref->tr = flecs_table_record_get(world, table, ref->id);
-        if (!tr) {
+    if (ref->table_id == table->id) {
+        if (ref->table_version == flecs_get_table_version(world, table)) {
             return;
         }
-
-        ecs_assert(tr->hdr.table == r->table, ECS_INTERNAL_ERROR, NULL);
-        ref->table_id = table->id;
     }
+
+    ref->table_id = table->id;
+    ref->table_version = flecs_get_table_version(world, table);
+    ref->ptr = flecs_get_component(table, ECS_RECORD_TO_ROW(r->row), 
+        flecs_id_record_get(world, ref->id));
+
 error:
     return;
 }
@@ -8300,7 +8313,9 @@ void* ecs_ref_get_id(
     ecs_check(ref->entity != 0, ECS_INVALID_PARAMETER, "ref not initialized");
     ecs_check(ref->id != 0, ECS_INVALID_PARAMETER, "ref not initialized");
     ecs_check(ref->record != NULL, ECS_INVALID_PARAMETER, "ref not initialized");
-    ecs_check(id == ref->id, ECS_INVALID_PARAMETER, "ref not initialized");
+    ecs_check(id == ref->id, ECS_INVALID_PARAMETER, "id does not match ref");
+
+    (void)id;
 
     ecs_record_t *r = ref->record;
     ecs_table_t *table = r->table;
@@ -8308,28 +8323,15 @@ void* ecs_ref_get_id(
         return NULL;
     }
 
-    int32_t row = ECS_RECORD_TO_ROW(r->row);
-    ecs_check(row < ecs_table_count(table), ECS_INTERNAL_ERROR, NULL);
-
-    ecs_table_record_t *tr = ref->tr;
-    if (flecs_ref_needs_sync(ref, tr, table)) {
-        tr = ref->tr = flecs_table_record_get(world, table, id);
-        if (!tr) {
-            return NULL;
-        }
-
-        ref->table_id = table->id;
-        ecs_assert(tr->hdr.table == r->table, ECS_INTERNAL_ERROR, NULL);
-    }
-
-    int32_t column = tr->column;
-    if (column == -1) {
-        ecs_id_record_t *idr = (ecs_id_record_t*)tr->hdr.cache;
-        if (idr->flags & EcsIdIsSparse) {
-            return flecs_sparse_get_any(idr->sparse, 0, ref->entity);
+    if (ref->table_id == table->id) {
+        if (ref->table_version == flecs_get_table_version(world, table)) {
+            return ref->ptr;
         }
     }
-    return flecs_table_get_component(table, column, row).ptr;
+
+    ecs_ref_update(world, ref);
+
+    return ref->ptr;
 error:
     return NULL;
 }
@@ -19102,6 +19104,27 @@ ecs_entity_t ecs_get_max_id(
     return flecs_entities_max_id(world);
 error:
     return 0;
+}
+
+void flecs_increment_table_version(
+    ecs_world_t *world,
+    ecs_table_t *table)
+{
+    flecs_poly_assert(world, ecs_world_t);
+    ecs_assert(table != NULL, ECS_INVALID_PARAMETER, NULL);
+
+    world->table_version[table->id & ECS_TABLE_VERSION_ARRAY_BITMASK] ++;
+    return;
+}
+
+uint32_t flecs_get_table_version(
+    const ecs_world_t *world,
+    const ecs_table_t *table)
+{
+    flecs_poly_assert(world, ecs_world_t);
+    ecs_assert(table != NULL, ECS_INVALID_PARAMETER, NULL);
+
+    return world->table_version[table->id & ECS_TABLE_VERSION_ARRAY_BITMASK];
 }
 
 const ecs_type_info_t* flecs_type_info_get(
@@ -37042,9 +37065,11 @@ void flecs_table_mark_table_dirty(
     ecs_table_t *table,
     int32_t index)
 {
-    (void)world;
     if (table->dirty_state) {
         table->dirty_state[index] ++;
+    }
+    if (!index) {
+        flecs_increment_table_version(world, table);
     }
 }
 
