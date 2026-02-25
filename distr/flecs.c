@@ -49392,6 +49392,10 @@ const char* ecs_world_from_json_file(
 typedef struct ecs_script_impl_t ecs_script_impl_t;
 typedef struct ecs_script_scope_t ecs_script_scope_t;
 
+#ifndef ECS_PARSER_MAX_RECURSION_DEPTH
+#define ECS_PARSER_MAX_RECURSION_DEPTH (64)
+#endif
+
 typedef struct ecs_parser_t {
     const char *name;
     const char *code;
@@ -49402,6 +49406,8 @@ typedef struct ecs_parser_t {
     bool significant_newline;
     bool merge_variable_members;
     bool function_token;
+    int16_t scope_depth;
+    int16_t expr_depth;
 
     ecs_world_t *world;
 
@@ -50245,10 +50251,15 @@ typedef int (*ecs_visit_action_t)(
     ecs_script_visit_t *visitor, 
     ecs_script_node_t *node);
 
+/* Visitors track both scope nodes and statement nodes on the traversal stack.
+ * For deeply nested scopes this requires roughly 2x the parser nesting depth,
+ * plus the root scope node. */
+#define ECS_SCRIPT_VISIT_MAX_DEPTH ((ECS_PARSER_MAX_RECURSION_DEPTH * 2) + 4)
+
 struct ecs_script_visit_t {
     ecs_script_impl_t *script;
     ecs_visit_action_t visit;
-    ecs_script_node_t* nodes[256];
+    ecs_script_node_t* nodes[ECS_SCRIPT_VISIT_MAX_DEPTH];
     ecs_script_node_t *prev, *next;
     int32_t depth;
 };
@@ -56078,6 +56089,10 @@ const char* flecs_meta_parse_member(
     }
 
     int32_t len = flecs_ito(int32_t, ptr - start);
+    if (len >= ECS_MAX_TOKEN_SIZE) {
+        len = ECS_MAX_TOKEN_SIZE - 1;
+    }
+
     ecs_os_memcpy(token_out, start, len);
     token_out[len] = '\0';
     if (ch == '.') {
@@ -56880,6 +56895,10 @@ int ecs_meta_set_value(
     ecs_check(value != NULL, ECS_INVALID_PARAMETER, NULL);
     ecs_entity_t type = value->type;
     ecs_check(type != 0, ECS_INVALID_PARAMETER, NULL);
+    if (!value->ptr) {
+        ecs_err("value pointer is null");
+        return -1;
+    }
     const EcsType *mt = ecs_get(cursor->world, type, EcsType);
     if (!mt) {
         ecs_err("type of value does not have reflection data");
@@ -56905,7 +56924,13 @@ int ecs_meta_set_value(
         case EcsF64:  return ecs_meta_set_float(cursor, *(double*)value->ptr);
         case EcsUPtr: return ecs_meta_set_uint(cursor, *(uintptr_t*)value->ptr);
         case EcsIPtr: return ecs_meta_set_int(cursor, *(intptr_t*)value->ptr);
-        case EcsString: return ecs_meta_set_string(cursor, *(char**)value->ptr);
+        case EcsString: {
+            char *str = *(char**)value->ptr;
+            if (!str) {
+                return ecs_meta_set_null(cursor);
+            }
+            return ecs_meta_set_string(cursor, str);
+        }
         case EcsEntity: return ecs_meta_set_entity(cursor, *(ecs_entity_t*)value->ptr);
         case EcsId: return ecs_meta_set_id(cursor, *(ecs_id_t*)value->ptr);
         default:
@@ -57032,9 +57057,17 @@ int ecs_meta_set_string(
     ecs_meta_cursor_t *cursor,
     const char *value)
 {
+    if (!value) {
+        return ecs_meta_set_null(cursor);
+    }
+
     ecs_meta_scope_t *scope = flecs_cursor_get_scope(cursor);
     ecs_meta_op_t *op = flecs_cursor_get_op(scope);
     void *ptr = flecs_meta_cursor_get_ptr(cursor->world, cursor, scope);
+    if (!ptr) {
+        ecs_err("no object to assign");
+        goto error;
+    }
 
     switch(op->kind) {
     case EcsOpI8:
@@ -57123,7 +57156,9 @@ int ecs_meta_set_string(
         set_T(ecs_f64_t, ptr, atof(value));
         break;
     case EcsOpString: {
-        ecs_assert(*(ecs_string_t*)ptr != value, ECS_INVALID_PARAMETER, NULL);
+        if (*(ecs_string_t*)ptr == value) {
+            break;
+        }
         ecs_os_free(*(ecs_string_t*)ptr);
         char *result = ecs_os_strdup(value);
         set_T(ecs_string_t, ptr, result);
@@ -57456,6 +57491,10 @@ int ecs_meta_set_null(
     ecs_meta_scope_t *scope = flecs_cursor_get_scope(cursor);
     ecs_meta_op_t *op = flecs_cursor_get_op(scope);
     void *ptr = flecs_meta_cursor_get_ptr(cursor->world, cursor, scope);
+    if (!ptr) {
+        ecs_err("no object to assign");
+        goto error;
+    }
     switch (op->kind) {
     case EcsOpString:
         ecs_os_free(*(char**)ptr);
@@ -59442,8 +59481,18 @@ void flecs_rtt_init_default_hooks_vector(
 {
     const EcsVector *vector_info = ecs_get(world, component, EcsVector);
     ecs_assert(vector_info != NULL, ECS_INTERNAL_ERROR, NULL);
+    if (!ecs_is_alive(world, vector_info->type)) {
+        ecs_err("vector '%s' has invalid element type", ecs_get_name(world, component));
+        return;
+    }
+
     const ecs_type_info_t *element_ti =
         ecs_get_type_info(world, vector_info->type);
+    if (!element_ti) {
+        ecs_err("vector '%s' has invalid element type", ecs_get_name(world, component));
+        return;
+    }
+
     ecs_rtt_vector_ctx_t *rtt_ctx = ecs_os_malloc_t(ecs_rtt_vector_ctx_t);
     rtt_ctx->type_info = element_ti;
     ecs_flags32_t flags = element_ti->hooks.flags;
@@ -66138,6 +66187,14 @@ const char* flecs_script_scope(
     ecs_assert(scope != NULL, ECS_INTERNAL_ERROR, NULL);
     ecs_assert(pos[-1] == '{', ECS_INTERNAL_ERROR, NULL);
 
+    if (parser->scope_depth >= ECS_PARSER_MAX_RECURSION_DEPTH) {
+        ecs_parser_error(parser->name, parser->code, pos - parser->code,
+            "maximum scope nesting depth exceeded");
+        return NULL;
+    }
+
+    parser->scope_depth ++;
+
     ecs_script_scope_t *prev = parser->scope;
     parser->scope = scope;
 
@@ -66159,11 +66216,16 @@ const char* flecs_script_scope(
 
 scope_close:
     parser->scope = prev;
+    parser->scope_depth --;
 
     ecs_assert(pos[-1] == '}', ECS_INTERNAL_ERROR, NULL);
     return pos;
 
-    ParserEnd;
+    Error("unexpected end of rule (parser error)");
+error:
+    parser->scope = prev;
+    parser->scope_depth --;
+    return NULL;
 }
 
 /* Parse comma expression (expressions separated by ',') */
@@ -68161,10 +68223,12 @@ void flecs_script_template_ctor(
 {
     ecs_world_t *world = ti->hooks.ctx;
     ecs_entity_t template_entity = ti->component;
+
+    /* Initialize object so copy hooks can safely overwrite members with dtors. */
+    flecs_default_ctor(ptr, count, ti);
     
     const EcsStruct *st = ecs_get(world, template_entity, EcsStruct);
     if (!st) {
-        ecs_os_memset(ptr, 0, count * ti->size);
         return;
     }
 
@@ -69112,6 +69176,20 @@ error:
 
 #ifdef FLECS_SCRIPT
 
+static
+int flecs_script_visit_push_checked(
+    ecs_script_visit_t *v,
+    ecs_script_node_t *node)
+{
+    if (v->depth >= ECS_SCRIPT_VISIT_MAX_DEPTH) {
+        ecs_err("maximum script nesting depth exceeded");
+        return -1;
+    }
+
+    v->nodes[v->depth ++] = node;
+    return 0;
+}
+
 ecs_script_node_t* ecs_script_parent_node_(
     ecs_script_visit_t *v)
 {
@@ -69187,10 +69265,13 @@ int ecs_script_visit_scope_(
     ecs_script_visit_t *v,
     ecs_script_scope_t *scope)
 {
+    int32_t depth = v->depth;
     ecs_script_node_t **nodes = ecs_vec_first_t(
         &scope->stmts, ecs_script_node_t*);
 
-    v->nodes[v->depth ++] = (ecs_script_node_t*)scope;
+    if (flecs_script_visit_push_checked(v, (ecs_script_node_t*)scope)) {
+        return -1;
+    }
 
     int32_t i, count = ecs_vec_count(&scope->stmts);
     for (i = 0; i < count; i ++) {
@@ -69206,18 +69287,22 @@ int ecs_script_visit_scope_(
             v->next = NULL;
         }
 
-        ecs_script_visit_push(v, nodes[i]);
+        if (flecs_script_visit_push_checked(v, nodes[i])) {
+            v->depth = depth;
+            return -1;
+        }
 
         ecs_assert(v->visit != NULL, ECS_INTERNAL_ERROR, NULL);
 
         if (v->visit(v, nodes[i])) {
+            v->depth = depth;
             return -1;
         }
 
         ecs_script_visit_pop(v, nodes[i]);
     }
 
-    v->depth --;
+    v->depth = depth;
 
     return 0;
 }
@@ -69226,13 +69311,17 @@ int ecs_script_visit_node_(
     ecs_script_visit_t *v,
     ecs_script_node_t *node)
 {
-    v->nodes[v->depth ++] = node;
-
-    if (v->visit(v, node)) {
+    int32_t depth = v->depth;
+    if (flecs_script_visit_push_checked(v, node)) {
         return -1;
     }
 
-    v->depth --;
+    if (v->visit(v, node)) {
+        v->depth = depth;
+        return -1;
+    }
+
+    v->depth = depth;
 
     return 0;
 }
@@ -88353,7 +88442,22 @@ void flecs_set_array(ecs_iter_t *it) {
             continue;
         }
 
+        if (!ecs_is_alive(world, elem_type)) {
+            ecs_err("array '%s' has invalid element type", ecs_get_name(world, e));
+            continue;
+        }
+
         const EcsComponent *elem_ptr = ecs_get(world, elem_type, EcsComponent);
+        if (!elem_ptr) {
+            ecs_err("array '%s' has invalid element type", ecs_get_name(world, e));
+            continue;
+        }
+
+        if (!ecs_get_type_info(world, elem_type)) {
+            ecs_err("array '%s' element type has no type info", ecs_get_name(world, e));
+            continue;
+        }
+
         if (flecs_init_type(world, e, EcsArrayType, 
             elem_ptr->size * elem_count, elem_ptr->alignment)) 
         {
@@ -88374,6 +88478,21 @@ void flecs_set_vector(ecs_iter_t *it) {
 
         if (!elem_type) {
             ecs_err("vector '%s' has no element type", ecs_get_name(world, e));
+            continue;
+        }
+
+        if (!ecs_is_alive(world, elem_type)) {
+            ecs_err("vector '%s' has invalid element type", ecs_get_name(world, e));
+            continue;
+        }
+
+        if (!ecs_get(world, elem_type, EcsComponent)) {
+            ecs_err("vector '%s' has invalid element type", ecs_get_name(world, e));
+            continue;
+        }
+
+        if (!ecs_get_type_info(world, elem_type)) {
+            ecs_err("vector '%s' element type has no type info", ecs_get_name(world, e));
             continue;
         }
 
@@ -91956,6 +92075,14 @@ const char* flecs_script_parse_expr(
     ecs_token_kind_t left_oper,
     ecs_expr_node_t **out)
 {
+    if (parser->expr_depth >= ECS_PARSER_MAX_RECURSION_DEPTH) {
+        ecs_parser_error(parser->name, parser->code, pos - parser->code,
+            "maximum expression nesting depth exceeded");
+        return NULL;
+    }
+
+    parser->expr_depth ++;
+
     ecs_tokenizer_t _tokenizer;
     ecs_os_zeromem(&_tokenizer);
     _tokenizer.tokens = _tokenizer.stack.tokens;
@@ -91966,6 +92093,7 @@ const char* flecs_script_parse_expr(
     pos = flecs_script_parse_lhs(parser, pos, tokenizer, left_oper, out);
     parser->function_token = old_function_token;
     if (!pos) {
+        parser->expr_depth --;
         if (out && *out) {
             flecs_script_parser_expr_free(parser, *out);
             *out = NULL;
@@ -91973,6 +92101,7 @@ const char* flecs_script_parse_expr(
         return NULL;
     }
 
+    parser->expr_depth --;
     return pos;
 }
 
